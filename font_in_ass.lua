@@ -153,7 +153,9 @@ local function getPath(sid)
         if track.type == "sub" and track.id == sid then
             if track.external and track.codec == "ass" then
                 local sub_path = track["external-filename"]
-				return sub_path:gsub("\\", "/")
+				if not sub_path:match('^http') then
+					return sub_path:gsub("\\", "/")
+				end
             end
             break
         end
@@ -229,4 +231,5 @@ mp.register_script_message('menu_event', function(json)
 	elseif event.type == 'close' then
 		mp.set_property('pause', 'no')
 	end
+
 end)
