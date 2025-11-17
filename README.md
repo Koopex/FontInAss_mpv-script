@@ -1,6 +1,6 @@
-# FontInAss-MPV
+# FontInAss_mpv-script
 
-在MPV播放器中请求 [FontInAss](https://github.com/RiderLty/fontInAss) 子集化处理字幕。
+在 mpv 播放器中请求 [FontInAss](https://github.com/RiderLty/fontInAss) 子集化处理本地ass字幕。
 
 # 主要功能
 
