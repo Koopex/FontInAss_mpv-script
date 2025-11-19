@@ -2,7 +2,7 @@ local mp = require 'mp'
 local utils = require 'mp.utils'
 
 local o = {
-	--设置你的fontinass服务地址
+	--设置你的fontinass服务地址 (默认的端口为8011)
     api = 'http://[ip]:[port]/fontinass/process_bytes',
 	--安静模式,不提示字体缺失
 	silent = false,
@@ -233,3 +233,4 @@ mp.register_script_message('menu_event', function(json)
 	end
 
 end)
+
