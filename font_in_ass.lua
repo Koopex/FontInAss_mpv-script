@@ -9,30 +9,41 @@
 
 -------------------------------- 脚本配置 --------------------------------
 local o = {
+
+	----------------- api 必须配置, 其他可选 -----------------
 	-- 设置你的FontInAss服务地址, 使用 8011 端口
 	-- 示例 'http://192.168.1.100:8011/fontinass/process_bytes'
     api = 'http://192.168.1.100:8011/fontinass/process_bytes',
-	-- api 必须配置, 其他可选
 
-	-- 安静模式,不提示字体缺失
-	silent = false,
+
+	---------------------- 提示缺失信息 ----------------------
+	-- 是否提示缺失信息
+	-- 0: 不提示
+	-- 1: 仅"字体"缺失时提示
+	-- 2: "字体"或"字形"缺失时提示
+	-- 不管选哪个, 控制台都能查看全部信息
+	reminder = 2,
+
+	-- 提示方式
+	-- false: (默认) 有 uosc 则使用 uosc 菜单, 没有则通过 osd 提示
+	-- true: 总是使用 osd 提示 (即使有 uosc), 
+	always_osd = false,
+
+	-- osd 提示时, 复制字体名称的按键
+	key_copy = 'Ctrl+c',
+
+	-- osd 提示时, 查看日志的按键
+	key_logs = 'f',
+
+	-- osd 提示时, 关闭提示的按键
+	key_close = 'SPACE',
+
+	----------------------- 路径设置 -----------------------
     -- FontInAss 的日志路径,设置后可通过按键打开该文件所在位置
 	-- 可以留空: [[]] 但不能注释掉
 	-- 示例: [[/path/to/fontinass/logs/miss_logs.txt]]
     miss_logs_path = [[]],
 
-	-- 如果有 uosc,通过 uosc 菜单提示缺失的字体, 没有 uosc 则通过 osd 提示
-	---------------------------------------------------------------------- 
-	-- 即使有 uosc 也使用 osd 提示
-	always_osd = false,
-	-- osd 提示时, 复制字体名称的按键
-	key_copy = 'Ctrl+c',
-	-- osd 提示时, 查看日志的按键
-	key_logs = 'f',
-	-- osd 提示时, 关闭提示的按键
-	key_close = 'ESC',
-	-- osd 提示持续时间(秒)
-	duration = 20,
 	-- 子集化后字幕临时存放的文件夹, 播放结束自动删除字幕
 	-- 如果需要更改, 必须提前创建好文件夹
 	-- 示例: '~~home/_cache/fontinass_subs'  
@@ -45,6 +56,7 @@ local o = {
 
 local mp = require 'mp'
 local utils = require 'mp.utils'
+local osd = mp.create_osd_overlay('ass-events')
 if o.temp_dir:match('^~~home') then
 	o.temp_dir = mp.command_native({"expand-path", o.temp_dir})
 end
@@ -97,9 +109,8 @@ local function extractContent(text)
     return miss, subtitle
 end
 
-
-local function openMenu(callback)
-	if uosc_version then
+local function openMenu(first_time)
+	if uosc_version and not o.always_osd then
 		if mp.get_property_osd('user-data/uosc/menu/type', 'null') == 'font-loss' then
 			mp.commandv('script-message-to', 'uosc', 'close-menu', 'font-loss')
 		else
@@ -118,52 +129,49 @@ local function openMenu(callback)
 			mp.osd_message('未缺失')
 			return 
 		end
-		osd = mp.create_osd_overlay('ass-events')
-		if callback then
-			callback()
-		else
-			local function remove()
-				mp.remove_key_binding("temp_key_to_open_log")
-				mp.remove_key_binding("temp_key_to_close")
-				mp.remove_key_binding("temp_key_to_copy")
-				osd:remove()
-				timer:kill()
-			end
-			if o.miss_logs_path ~= '' then
-				mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
-					remove()
-					mp.set_property_bool('pause', true)
-					mp.commandv('script-binding', mp.get_script_name() .. '/openLog' )
-				end)
-			end
-			mp.add_forced_key_binding(o.key_close, "temp_key_to_close", function()
-				remove()
-			end)
-			mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
-				mp.set_property_bool('pause', true)
-				mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
-				remove()
-			end)
-			local head = '{\\fs30\\b1\\c&HFFFFFF&}'
-			if o.miss_logs_path ~= '' then
-				head = head .. string.format(
-					'按 %s 关闭, 按 %s 复制, 按 %s 打开日志\\N\\N', 
-					o.key_close, o.key_copy, o.key_logs
-				)
-			else
-				head = head .. string.format(
-					'按 %s 关闭, 按 %s 复制\\N\\N', 
-					o.key_close, o.key_copy
-				)
-			end
-			osd.data = head..message
-			osd:update()
+		mp.set_property_bool('pause', true)
+		local function remove()
+			mp.remove_key_binding("temp_key_to_open_log")
+			mp.remove_key_binding("temp_key_to_close")
+			mp.remove_key_binding("temp_key_to_copy")
+			osd:remove()
 		end
+		if o.miss_logs_path ~= '' then
+			mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
+				remove()
+				mp.commandv('script-binding', mp.get_script_name() .. '/openLog')
+			end)
+		end
+		mp.add_forced_key_binding(o.key_close, "temp_key_to_close", function()
+			remove()
+			mp.set_property_bool('pause', false)
+		end)
+		mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
+			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
+			remove()
+		end)
+		local head = '{\\b1\\bord1.2\\blur1.5\\3c&000000&}'
+		local tail = '{\\fs20\\bord1\\c&HEEEEEE&\\i1}*  '
+		if o.miss_logs_path ~= '' then
+			tail = tail..string.format(
+				'按 %s 关闭, 按 %s 复制, 按 %s 打开日志', 
+				o.key_close, o.key_copy, o.key_logs
+			)
+		else
+			tail = tail..string.format(
+				'按 %s 关闭, 按 %s 复制', 
+				o.key_close, o.key_copy
+			)
+		end
+		osd:remove()
+		osd.data = head..message..tail
+		osd:update()
 	end
 end
 
 
 local function warn(miss)
+	-- 获取缺失字体,字形
 	local zt, zx = {}, {}
 	for line in miss:gmatch("([^\r\n]+)") do
 		if string.find(line:match("^(.-)%s*%["), "字体") then
@@ -172,103 +180,61 @@ local function warn(miss)
 			table.insert(zx, line:match("%[([^%]]+)%]")..'：'..line:match("%](.*)"))
 		end
 	end
-	if not o.silent then
-		if uosc_version then
-			for _, font in ipairs(zt) do
-				table.insert(items, {
-					title = font, 
-					value = font,
-					bold = true, 
-				})
-			end
-			for _, font in ipairs(zx) do
-				table.insert(items, {
-					title = font, 
-					value = font,
-					hint = '缺少字形',
-					bold = true, 
-					muted = true,
-				})
-			end
-			if o.miss_logs_path ~= '' then
-				table.insert(items, {
-					title = '📁 打开日志', 
-					align = 'center',
-				})
-			end
-			openMenu()
-		else
-			if next(zt) then
-				message = message .. '{\\fs28\\b1\\c&H6B6BFF&}⚠️ 字体缺失\\N'
-				for _, s in ipairs(zt) do
-					message = message .. '{\\fs26\\b1\\c&HFFFFFF&}• ' .. s .. '\\N'
-				end
-				message = message .. '\\N'
-			end
-			if next(zx) then
-				message = message .. '{\\fs28\\b1\\c&H3DD9FF&}📝 缺少字形\\N'
-				for _, s in ipairs(zx) do
-					message = message .. '{\\fs26\\b1\\c&HFFFFFF&}• ' .. s .. '\\N'
-				end
-			end
-			openMenu(function()
-				local seconds = o.duration
-				timer = mp.add_periodic_timer(1, function()
-					local head = '{\\fs30\\b1\\c&HFFFFFF&}'
-					if o.miss_logs_path ~= '' then
-						head = head .. string.format(
-							'按 %s 关闭, 按 %s 复制, 按 %s 打开日志 ...... %d\\N\\N', 
-							o.key_close, o.key_copy, o.key_logs, seconds
-						)
-					else
-						head = head .. string.format(
-							'按 %s 关闭, 按 %s 复制 ...... %d\\N\\N', 
-							o.key_close, o.key_copy, seconds
-						)
-					end
-					osd.data = head..message
-					osd:update()
-					seconds = seconds - 1
-					if seconds <= 0 then
-						pcall(mp.remove_key_binding, "temp_key_to_open_log")
-						pcall(mp.remove_key_binding, "temp_key_to_close")
-						pcall(mp.remove_key_binding, "temp_key_to_copy")
-						osd:remove()
-						timer:kill()
-					end
-				end, true)
-				local function remove()
-					mp.remove_key_binding("temp_key_to_open_log")
-					mp.remove_key_binding("temp_key_to_close")
-					mp.remove_key_binding("temp_key_to_copy")
-					osd:remove()
-					timer:kill()
-				end
-				if o.miss_logs_path ~= '' then
-					mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
-						remove()
-						mp.set_property_bool('pause', true)
-						mp.commandv('script-binding', mp.get_script_name() .. '/openLog' )
-					end)
-				end
-				mp.add_forced_key_binding(o.key_close, "temp_key_to_close", function()
-					remove()
-				end)
-				mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
-					mp.set_property_bool('pause', true)
-					mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
-					remove()
-				end)
-				timer:resume()
-			end)
-		end
-	end
+
+	-- 输出到控制台
 	for _, font in ipairs(zt) do
 		mp.msg.error('字体缺失：'..font)
 	end
 	for _, font in ipairs(zx) do
 		mp.msg.warn('缺少字形：'..font)
 	end
+
+	-- uosc 通知
+	if uosc_version then 	
+		for _, font in ipairs(zt) do
+			table.insert(items, {
+				title = font, 
+				value = font,
+				bold = true, 
+			})
+		end
+		for _, font in ipairs(zx) do
+			table.insert(items, {
+				title = font, 
+				value = font,
+				hint = '缺少字形',
+				bold = true, 
+				muted = true,
+			})
+		end
+		if o.miss_logs_path ~= '' then
+			table.insert(items, {
+				title = '📁 打开日志', 
+				align = 'center',
+			})
+		end
+	else
+	-- osd 通知	
+		if next(zt) then
+			message = message .. '{\\fs32\\c&H6B6BFF&}⚠️ 字体缺失\\N'
+			for _, s in ipairs(zt) do
+				message = message .. '{\\fs26\\c&HFFFFFF&}• ' .. s .. '\\N'
+			end
+			message = message .. '\\N'
+		end
+		if next(zx) then
+			message = message .. '{\\fs30\\c&H3DD9FF&}📝 缺少字形\\N'
+			for _, s in ipairs(zx) do
+				message = message .. '{\\fs26\\c&HFFFFFF&}• ' .. s .. '\\N'
+			end
+			message = message .. '\\N'
+		end
+	end
+
+	-- 安静模式 或 (仅字体缺失时通知, 且没有字体缺失) 不通知
+	if o.reminder == 0 or (o.reminder == 1 and not next(zt)) then return end
+
+	openMenu(true)
 end
 
 
