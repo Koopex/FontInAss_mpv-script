@@ -16,9 +16,7 @@
 
 保存`font_in_ass.lua`到mpv配置目录的`scripts`文件夹
 
-编辑`font_in_ass.lua`：填写 FontInAss 的服务地址等
-
-可选的快捷键设置: `#	script-binding font_in_ass/openLog	#! 打开字体缺失日志`
+编辑`font_in_ass.lua`：填写 FontInAss 的服务地址等  
 
 # 感谢!
 - [FontInAss](https://github.com/RiderLty/fontInAss)
