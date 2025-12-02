@@ -17,6 +17,6 @@
 
 # 感谢!
 - [FontInAss](https://github.com/RiderLty/fontInAss)
-- [mpv](https://github.com/mpv-player/mpv)
 - [uosc](https://github.com/tomasklaen/uosc)
 - [embyToLocalPlayer](https://github.com/kjtsune/embyToLocalPlayer)
+- [mpv](https://github.com/mpv-player/mpv)
