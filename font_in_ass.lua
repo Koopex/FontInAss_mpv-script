@@ -43,30 +43,20 @@ local o ={
 	-- 可以留空: [[]] 但不能注释掉
 	-- 示例: [[/path/to/fontinass/logs/miss_logs.txt]]
     miss_logs_path = [[]],
-
-	-- 子集化后字幕临时存放的文件夹, 播放结束自动删除字幕
-	-- 如果需要更改, 必须提前创建好文件夹
-	-- 示例: '~~home/_cache/fontinass_subs'  
-	-- ~~home 代表mpv配置目录
-    temp_dir = '~~home',
 }
 ------------------------------ 脚本配置结束 ------------------------------
-
-
 
 local mp = require 'mp'
 local utils = require 'mp.utils'
 local osd = mp.create_osd_overlay('ass-events') 
 require 'mp.options'.read_options(o, mp.get_script_name())
-if o.temp_dir:match('^~~home') then
-	o.temp_dir = mp.command_native({"expand-path", o.temp_dir})
-end
 
 
 local items, message = {}, ''	--再次打开缺失信息菜单时使用
 local miss = '' 				--供复制到剪切板使用
-local subs = {}					--记录处理过的字幕, 防止重复处理
-local uosc_version = nil		-- 检测uosc使用
+local subsets = {}				--记录处理过的字幕, 防止重复处理
+local uosc_version = nil		--检测uosc
+local reloaded = false			--抵消切换子集化字幕的检测
 
 
 local function checkUosc()
@@ -163,6 +153,7 @@ local function openMenu()
 		mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
 			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
 			remove()
+			mp.osd_message('已复制')
 		end)
 		-- 如果提供了fontInAss日志路径, 则多注册一个打开日志文件的快捷键
 		if o.miss_logs_path ~= '' then
@@ -266,7 +257,7 @@ local function warn(miss)
 end
 
 
-local function post(sid, path)
+local function post(path)
 	-- curl
 	local curl_command = {
 		args = {
@@ -280,113 +271,78 @@ local function post(sid, path)
 	local result = utils.subprocess(curl_command)
 
 	if result.status == 0 then
-		-- 成功响应
 		result = result.stdout
-		local text = utils.format_json(result)
+		
+		-- subtitle = result:match("(%[Script Info%].*).$")
+		subtitle = result:match("%[Script Info%].*")
 
-		-- text 包含了缺失信息和字幕文本
-		miss = text:match("error: ([^\\]*)")
+		-- 备份原字幕, 同名保存新字幕, 重新载入
+		os.rename(path, path..'.backup')
+		local out_file = io.open(path, "w"):write(subtitle):close()
 
-		-- 缺失信息需要Base64解码
-		miss = decode(miss)
+		-- 抵消这次字幕改变触发的 on_sub_changed()
+		reloaded = true
+		mp.commandv("sub-reload")
 
-		-- 保存字幕到临时文件
-		local startPos = text:find("%[Script Info%]")
-		local subtitle = startPos and text:sub(startPos) or nil
-		subtitle = '["' .. subtitle .. ']'
-		subtitle = utils.parse_json(subtitle)[1]
-		local _, filename = utils.split_path(path)
-		local temp_file = utils.join_path(o.temp_dir, filename)
-		local out_file = io.open(temp_file, "w"):write(subtitle):close()
+		-- 记录处理过的字幕路径, 用于避免重复处理和恢复原字幕
+		table.insert(subsets, path)
 
-		-- 暂时取消 on_sub_changed() 的监听
-		mp.commandv("sub-remove", sid)
-		-- 临时监听, 字幕成功加载以后再恢复 on_sub_changed() 监听
-		local function temp_ob(_, sub)
-			if sub and sub.id then
-				--新字幕加载成功, 解除临时监听, 恢复主要监听
-				mp.unobserve_property(temp_ob)
-				mp.observe_property('current-tracks/sub', 'native', on_sub_changed)
-			end
+		miss = result:match("error: ([^\r\n]*)")
+		if miss == '' then 
+			mp.msg.info('子集化完成')
+			return 
 		end
-		mp.observe_property('current-tracks/sub', 'native', temp_ob)
-		mp.commandv("sub-add", temp_file, "select")
-		-- 记录处理过的字幕路径, 以便再次加载时不再处理
-		table.insert(subs, temp_file)
-
-		-- 处理完成
-		mp.msg.info('子集化完成')
-
-		-- 不管哪种提示方式都要warn(), 还需要输出到控制台
-		if miss~= '' then warn(miss) end
+		miss = decode(miss)
+		if miss == '已有内嵌字体' then 
+			mp.msg.info(miss)
+		else 
+			warn(miss) 
+		end
 	end
 end
 
 
 local function on_sub_changed(_, sub)
-	-- {		表格 sub 的结构
-	--   "codec": "ass",
-	--   "codec-desc": "Advanced Sub Station Alpha",
-	--   "id": 1,
-	--   "forced": false,
-	--   "default": false,
-	--   "type": "sub",
-	--   "title": "default.zh-cn.诸神.ass",
-	--   "image": false,
-	--   "albumart": false,
-	--   "dependent": false,
-	--   "visual-impaired": false,
-	--   "hearing-impaired": false,
-	--   "external": true,
-	--   "selected": true,
-	--   "main-selection": 0,
-	--   "external-filename": "\\\\NAS\\media2\\动画\\日本动画\\我心里危险的东西 (2023)\\Season 01\\我心里危险的东西 S01E01 [1080p BD] -AI-Raws@ANK.default.zh-cn.诸神.ass",
-	--   "ff-index": 0
-	-- }
+	-- 抵消加载子集化字幕的触发
+	if reloaded then reloaded = false return end
 
 	-- 更换字幕,清空旧字幕的缺失信息
 	items, message, miss = {}, '', ''
 
-	if not sub then return end
+	if not sub or not sub.external or sub.codec ~= "ass" or sub["external-filename"]:match('^http') then return end
 		
-	local sid, path 
-	-- 由于 external-filename 有减号, 不能使用 sub.external-filename
-	if sub.external and sub.codec == "ass" and not sub["external-filename"]:match('^http') then
-		-- 路径统一为正斜杠,方便下面的查重
-		sid, path = sub.id, sub["external-filename"]:gsub("\\", "/")
-	end
-
-	if not path then return end
+	local external_filename = sub["external-filename"]:gsub("\\", "/")
 
 	-- 当前视频没处理过字幕, 直接处理
-	if not next(subs) then	
-		post(sid, path)
+	if not next(subsets) then	
+		post(external_filename)
 	else
 		-- 已经处理过一些字幕, 检查当前字幕是不是处理过的
 		local found = false	
-		for _, item in ipairs(subs) do
-			if item == path then
+		for _, item in ipairs(subsets) do
+			if item == external_filename then
 				-- 已经子集化了, 忽略
 				found = true;
 				break
 			end
 		end
-		-- 没处理过, 处理
+		
 		if not found then
-			post(sid, path)
+			post(external_filename)
 		end
 	end
 end
 
 
-local function delete()
-	-- 视频结束删除临时生成的字幕
-	if next(subs) then
-		for _, s in ipairs(subs) do
+local function endFile()
+	-- 视频结束删除临时生成的字幕, 恢复原字幕
+	if next(subsets) then
+		for _, s in ipairs(subsets) do
 			os.remove(s)
+			os.rename(s..'.backup', s)
 		end
 	end
-	subs = {}
+	subsets = {}
 end
 
 
@@ -420,8 +376,9 @@ local function openLog()
 	end
 end
 
+
 checkUosc()
-mp.register_event('end-file', delete)
+mp.register_event('end-file', endFile)
 mp.observe_property('current-tracks/sub', 'native', on_sub_changed)
 mp.register_script_message('menu_event', menu_event)
 mp.add_key_binding(nil, 'openLog', openLog)
