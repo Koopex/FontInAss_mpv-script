@@ -1,66 +1,62 @@
---[[    https://github.com/Koopex/FontInAss_mpv-script
+--[[	https://github.com/Koopex/FontInAss_mpv-script
 
 脚本功能: 请求 FontInAss 子集化处理本地 ass 字幕
 
 ------------------------------ 可用的快捷键 ------------------------------
-#	script-binding font_in_ass/fonts  		#! 字体缺失列表
-#	script-binding font_in_ass/openLog  	#! 打开字体缺失日志
+#	script-binding font_in_ass/fonts  		#! 字体缺失（OSD）
+#	script-binding font_in_ass/openLog  	#! 字体缺失（网页）
 ]]
 
 -------------------------------- 脚本配置 --------------------------------
 local o ={
 
-	----------------- api 必须配置, 其他可选 -----------------
-	-- 设置你的FontInAss服务地址, 使用 8011 端口
-	-- 示例 'http://192.168.1.100:8011/fontinass/process_bytes'
-    api = 'http://192.168.1.100:8011/fontinass/process_bytes',
+	--================[[ 服务地址必须配置 ]]================--
+	-- 设置你的FontInAss服务地址, 默认端口为 8011 
+	-- 示例 'http://192.168.1.100:8011'
+    server = '',
+	--=================== 以下可保持默认 ===================--
 
 
 	---------------------- 提示缺失信息 ----------------------
 	-- 是否提示缺失信息
-	-- 2: "字体"或"字形"缺失时提示
-	-- 1: 仅"字体"缺失时提示
 	-- 0: 不提示
+	-- 1: 仅"字体"缺失时提示
+	-- 2: "字体"或"字形"缺失时提示
 	-- 不管选哪个, 控制台都能查看全部信息
 	reminder = 2,
 
 	-- 提示方式
-	-- false: (默认) 有 uosc 则使用 uosc 菜单, 没有则通过 osd 提示
-	-- true: 总是使用 osd 提示 (即使有 uosc), 
+	-- true:  总是使用屏幕消息提示 (即使有 uosc)
+	-- false:   有 uosc 则使用 uosc 菜单, 没有则通过屏幕消息提示
 	always_osd = false,
 
-	-- osd 提示时, 复制字体名称的按键
+	---------- 通过屏幕消息提示字体缺失时的按键设置 ----------
+	---复制字体名称
 	key_copy = 'Ctrl+c',
 
-	-- osd 提示时, 查看日志的按键
+	-- 查看日志
 	key_logs = 'f',
 
-	-- osd 提示时, 关闭提示的按键
+	-- 忽略提示, 继续播放
 	key_close = 'SPACE',
-
-	----------------------- 路径设置 -----------------------
-    -- FontInAss 的日志路径,设置后可通过按键打开该文件所在位置
-	-- 可以留空: [[]] 但不能注释掉
-	-- 示例: [[/path/to/fontinass/logs/miss_logs.txt]]
-    miss_logs_path = [[]],
 }
 ------------------------------ 脚本配置结束 ------------------------------
 
 local mp = require 'mp'
 local utils = require 'mp.utils'
-local osd = mp.create_osd_overlay('ass-events') 
+local osd = mp.create_osd_overlay('ass-events')
+local platform = mp.get_property_native('platform')
 require 'mp.options'.read_options(o, mp.get_script_name())
 
-
+local suffix = "/api/subset"	--服务路径
 local items, message = {}, ''	--再次打开缺失信息菜单时使用
 local miss = '' 				--供复制到剪切板使用
 local subsets = {}				--记录处理过的字幕, 防止重复处理
 local uosc_version = nil		--检测uosc
-local reloaded = false			--抵消切换子集化字幕的检测
+local reloaded = false			--抵消切换子集化字幕触发的监测
 
 
 local function checkUosc()
-	--检查uosc
 	if o.always_osd then return end
 	mp.register_script_message('uosc-version', function(version)
 		uosc_version = version
@@ -70,7 +66,8 @@ end
 
 
 local function decode(data)
-	-- 用来解码缺失信息
+	if not data then return nil end
+	-- 用来解码 x-message
 	local base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	data = string.gsub(data, "[^%a%d%+%/=]", "")
 	local padding = string.sub(data, -2)
@@ -99,7 +96,8 @@ local function decode(data)
 			end
 		end
 	end
-	return result
+
+	return utils.parse_json(result)
 end
 
 
@@ -126,7 +124,7 @@ local function openMenu()
 		-- 没有缺失信息
 		if message == '' then 
 			mp.osd_message('未缺失')
-			return 
+			return
 		end
 		--有缺失信息, 暂停并发送消息提示
 		mp.set_property_bool('pause', true)
@@ -152,13 +150,11 @@ local function openMenu()
 		-- 注册复制缺失信息的快捷键
 		mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
 			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
-			remove()
 			mp.osd_message('已复制')
 		end)
 		-- 如果提供了fontInAss日志路径, 则多注册一个打开日志文件的快捷键
 		if o.miss_logs_path ~= '' then
 			mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
-				remove()
 				mp.commandv('script-binding', mp.get_script_name() .. '/openLog')
 			end)
 		end
@@ -174,7 +170,7 @@ end
 local function warn(miss)
 	-- 分离字体和字形信息
 	local zt, zx = {}, {}
-	for line in miss:gmatch("([^\r\n]+)") do
+	for _, line in ipairs(miss) do
 		if string.find(line:match("^(.-)%s*%["), "字体") then
 			table.insert(zt, line:match("%[([^%]]+)%]"))
 		else
@@ -191,7 +187,7 @@ local function warn(miss)
 	end
 
 	-- uosc 通知
-	if uosc_version then 	
+	if uosc_version then
 		for _, font in ipairs(zt) do
 			table.insert(items, {
 				title = font, 
@@ -208,17 +204,16 @@ local function warn(miss)
 				muted = true,
 			})
 		end
-		if o.miss_logs_path ~= '' then
-			table.insert(items, {
-				title = '📁 打开日志', 
-				align = 'center',
-			})
-		end
+
+		table.insert(items, {
+			title = '🔍 缺失日志',
+			align = 'center',
+		})
 	else
 	-- osd 通知	
 		-- 提前构建好osd消息, 后面可能会被快捷键调用, 不必反复构建
 		if next(zt) then
-			message = message .. '{\\fs32\\c&H6B6BFF&}⚠️ 字体缺失\\N'
+			message = message .. '\\N\\N\\N{\\fs32\\c&H6B6BFF&}⚠️ 字体缺失\\N'
 			for _, s in ipairs(zt) do
 				message = message .. '{\\fs26\\c&HFFFFFF&}• ' .. s .. '\\N'
 			end
@@ -234,18 +229,12 @@ local function warn(miss)
 		--头部的样式对后面的所有文本都生效, 除非被后面的样式覆盖
 		local head = '{\\b1\\bord1.2\\blur1.5\\3c&000000&}'
 		local tail = '{\\fs20\\bord1\\c&HEEEEEE&\\i1}*  '
-		--如果提供了fontInAss,增加底部的快捷键提示
-		if o.miss_logs_path ~= '' then
-			tail = tail..string.format(
-				'按 %s 关闭, 按 %s 复制, 按 %s 打开日志', 
-				o.key_close, o.key_copy, o.key_logs
-			)
-		else
-			tail = tail..string.format(
-				'按 %s 关闭, 按 %s 复制', 
-				o.key_close, o.key_copy
-			)
-		end 
+		
+		tail = tail..string.format(
+			'按 %s 关闭, 按 %s 复制, 按 %s 打开日志', 
+			o.key_close, o.key_copy, o.key_logs
+		)
+
 		message = head..message..tail
 	end
 
@@ -257,48 +246,157 @@ local function warn(miss)
 end
 
 
-local function post(path)
-	-- curl
-	local curl_command = {
-		args = {
-			'curl', '-s', '-i',
-			'-X', 'POST', '--data-binary', '@' .. path,
-			'-H', 'Content-Type: text/plain',
-			o.api
-		},
-		cancellable = false
-	}
-	local result = utils.subprocess(curl_command)
+local function post(path, retry_count)
+	retry_count = retry_count or 0
+	local max_retries = 2
 
-	if result.status == 0 then
-		result = result.stdout
-		
-		-- subtitle = result:match("(%[Script Info%].*).$")
-		subtitle = result:match("%[Script Info%].*")
-
-		-- 备份原字幕, 同名保存新字幕, 重新载入
-		os.rename(path, path..'.backup')
-		local out_file = io.open(path, "w"):write(subtitle):close()
-
-		-- 抵消这次字幕改变触发的 on_sub_changed()
-		reloaded = true
-		mp.commandv("sub-reload")
-
-		-- 记录处理过的字幕路径, 用于避免重复处理和恢复原字幕
-		table.insert(subsets, path)
-
-		miss = result:match("error: ([^\r\n]*)")
-		if miss == '' then 
-			mp.msg.info('子集化完成')
-			return 
-		end
-		miss = decode(miss)
-		if miss == '已有内嵌字体' then 
-			mp.msg.info(miss)
-		else 
-			warn(miss) 
+	local file_check = io.open(path, "rb")
+    if not file_check then
+		mp.msg.error('文件不存在: ' .. path)
+		return
+	end
+	file_check:close()
+	if o.reminder == 2 then
+		if retry_count > 0  then
+			mp.msg.warn(string.format('正在重试 (%d/%d)...', retry_count, max_retries))
+		else
+			mp.osd_message('⏳ 正在子集化字幕...', 30)
 		end
 	end
+
+    -- 使用 mp.command_native_async 发送异步请求
+    mp.command_native_async({
+        name = "subprocess",
+        args = {
+            "curl", "-s", "-i",
+            "-X", "POST",
+            o.server .. suffix,
+            "--data-binary", "@" .. path,
+            "--insecure",
+            "--connect-timeout", "5",
+            "--max-time", "30",
+        },
+        playback_only = false,
+        capture_stdout = true,
+        capture_stderr = true,
+    }, function(success, result, error)
+        -- 异步回调函数
+		if not success then
+			mp.msg.error('请求失败: ' .. (error or '未知错误'))
+			mp.osd_message('❎ 请求失败', 3)
+            return
+        end
+		
+        -- 判断是否需要重试
+        local retryable_errors = {
+            [6] = true, [7] = true, [28] = true, 
+            [52] = true, [56] = true,
+        }
+        
+        if result.status ~= 0 and retryable_errors[result.status] and retry_count < max_retries then
+            mp.msg.warn(string.format('请求失败 (curl:%d)，%d秒后重试...', 
+                result.status, retry_count + 1))
+            mp.add_timeout(retry_count + 1, function()
+                post(path, retry_count + 1)
+            end)
+            return
+        end
+        
+        -- 处理结果
+        if result.status == 0 then
+            local http_status = result.stdout:match("HTTP/%d%.%d (%d+)")
+            local code = result.stdout:match("x%-code: ([^\r\n]*)")
+			local message = decode(result.stdout:match("x%-message: ([^\r\n]*)"))
+            
+            local function switchSubtitle()
+                local subtitle = result.stdout:match("%[Script Info%].*")
+                
+                if not subtitle then
+                    mp.msg.error('响应中没有找到字幕内容')
+                    return false
+                end
+                
+                local backup = path .. '.backup'
+                local success, err = os.rename(path, backup)
+                if not success then
+                    mp.msg.error('备份失败: ' .. (err or '未知错误'))
+                    return false
+                end
+                
+                local out_file, err = io.open(path, "w")
+                if not out_file then
+                    mp.msg.error('写入失败: ' .. (err or '未知错误'))
+                    os.rename(backup, path)
+                    return false
+                end
+                out_file:write(subtitle)
+                out_file:close()
+                
+                reloaded = true
+                mp.commandv("sub-reload")
+                table.insert(subsets, path)
+                return true
+            end
+            
+            if http_status == '405' then
+                mp.msg.error('API不支持此方法: ' .. o.server .. suffix)
+            elseif http_status == '500' then
+                mp.msg.error('服务器内部错误')
+            elseif http_status == '502' or http_status == '503' or http_status == '504' then
+                if retry_count < max_retries then
+                    mp.msg.warn('服务器暂时不可用，准备重试...')
+                    mp.add_timeout(retry_count + 1, function()
+                        post(path, retry_count + 1)
+                    end)
+                    return
+                end
+                mp.msg.error('服务器不可用 (HTTP ' .. http_status .. ')')
+			elseif http_status == '200' then
+				if code == '200' then
+					if switchSubtitle() then
+						mp.msg.info('子集化完成')
+						if o.reminder == 2 then
+							mp.osd_message('✅ 子集化完成', 3)
+						end
+					end
+				elseif code == '201' then
+					if switchSubtitle() then
+						mp.msg.warn('子集化完成')
+						if o.reminder == 2 then
+							mp.osd_message('✅ 子集化完成', 3)
+						end
+						if message then
+							warn(message)
+						end
+					end
+				elseif code == '400' then
+					mp.msg.warn('❎ 子集化失败: ' .. (message or '未知错误'))
+					mp.osd_message('❎ 子集化失败', 3)
+				else
+					mp.msg.warn('❎ 未知状态: HTTP ' .. http_status .. ', x-code: ' .. (code or '?'))
+					if message then
+						mp.msg.warn(utils.format_json(message))
+					end
+				end
+            else
+                mp.msg.warn('未知状态: HTTP ' .. (http_status or '?'))
+            end
+        else
+            local errors = {
+                [6] = '无法解析主机名',
+                [7] = '无法连接到服务器',
+                [28] = '连接超时',
+                [35] = 'SSL错误',
+                [52] = '服务器无响应',
+            }
+            local err_desc = errors[result.status] or ('curl错误: ' .. result.status)
+            mp.msg.error('请求失败: ' .. err_desc)
+            mp.osd_message('请求失败: ' .. err_desc, 5)
+            if result.status == 6 or result.status == 7 then
+                mp.msg.error('  API: ' .. o.server .. suffix)
+            end
+        end
+    end)
 end
 
 
@@ -310,11 +408,11 @@ local function on_sub_changed(_, sub)
 	items, message, miss = {}, '', ''
 
 	if not sub or not sub.external or sub.codec ~= "ass" or sub["external-filename"]:match('^http') then return end
-		
+
 	local external_filename = sub["external-filename"]:gsub("\\", "/")
 
 	-- 当前视频没处理过字幕, 直接处理
-	if not next(subsets) then	
+	if not next(subsets) then
 		post(external_filename)
 	else
 		-- 已经处理过一些字幕, 检查当前字幕是不是处理过的
@@ -326,7 +424,7 @@ local function on_sub_changed(_, sub)
 				break
 			end
 		end
-		
+
 		if not found then
 			post(external_filename)
 		end
@@ -366,20 +464,28 @@ end
 
 
 local function openLog()
-	--打开FontInAss日志
-	if o.miss_logs_path ~= '' then
-		utils.subprocess_detached(
-			{args = {'explorer', '/select,', o.miss_logs_path}, 
-			cancellable = false})
+	local link = o.server .. '/fontinass/#/miss-logs'
+	local param = ""
+	if platform == "windows" then
+		param = 'no-osd run cmd /c start "" "' .. link .. '"'
+	elseif platform == "darwin" then
+		param = "no-osd run /bin/sh -c \"open '" .. link .. "' &\""
+	elseif platform == "linux" then
+		param = "no-osd run /bin/sh -c \"xdg-open '" .. link .. "' &\""
 	else
-		mp.osd_message('未设置字体缺失日志文件路径', 5)
+		return
 	end
+	mp.command(param)
 end
 
-
-checkUosc()
-mp.register_event('end-file', endFile)
-mp.observe_property('current-tracks/sub', 'native', on_sub_changed)
-mp.register_script_message('menu_event', menu_event)
-mp.add_key_binding(nil, 'openLog', openLog)
-mp.add_key_binding(nil, 'fonts', openMenu)
+if o.server and o.server ~= '' then
+	checkUosc()
+	mp.register_event('end-file', endFile)
+	mp.observe_property('current-tracks/sub', 'native', on_sub_changed)
+	mp.register_script_message('menu_event', menu_event)
+	mp.add_key_binding(nil, 'openLog', openLog)
+	mp.add_key_binding(nil, 'fonts', openMenu)
+else
+	mp.msg.error('请在脚本配置中设置 FontInAss 服务地址')
+	mp.osd_message('请在脚本配置中设置 FontInAss 服务地址', 5)
+end
