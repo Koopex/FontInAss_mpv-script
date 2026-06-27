@@ -10,6 +10,7 @@
   - 不需要 emby 也能使用 FontInAss 实时处理字幕。  
   - 使用 [embyToLocalPlayer](https://github.com/kjtsune/embyToLocalPlayer) 的"读取硬盘模式"也能用 FontInAss。
 
+![image](https://github.com/Koopex/FontInAss_mpv-script/blob/main/%E9%A2%84%E8%A7%88/%E4%B8%A4%E7%A7%8D%E6%8F%90%E7%A4%BA%E6%96%B9%E5%BC%8F.png)
 # 使用方法
 
 1. 保存`font_in_ass.lua`到mpv配置目录的`scripts`文件夹  
