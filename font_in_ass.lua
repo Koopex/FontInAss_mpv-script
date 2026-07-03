@@ -13,7 +13,7 @@ local o ={
 	--================[[ 服务地址必须配置 ]]================--
 	-- 设置你的FontInAss服务地址, 默认端口为 8011 
 	-- 示例 'http://192.168.1.100:8011'
-    server = '',
+	server = '',
 	--=================== 以下可保持默认 ===================--
 
 
@@ -102,6 +102,11 @@ end
 
 
 local function openMenu()
+	-- 没处理过字幕
+	if not next(subsets) then mp.osd_message('还没处理过本地字幕') return end
+	-- 没有缺失信息
+	if message == '' then mp.osd_message('当前字幕没有缺失的字体或字形') return end
+
 	--不仅是第一次加载字幕, 通过快捷键也能调用
 	if uosc_version and not o.always_osd then
 		-- 打开uosc菜单
@@ -116,17 +121,11 @@ local function openMenu()
 				items = items,
 				callback = {mp.get_script_name(), 'menu_event'},
 				footnote = '点击字体复制',
-			})	
+			})
 			mp.commandv('script-message-to', 'uosc', 'open-menu', menu_props)
 		end
 	else
 		-- 根据 warn() 生成的文本发送消息
-		-- 没有缺失信息
-		if message == '' then 
-			mp.osd_message('未缺失')
-			return
-		end
-		--有缺失信息, 暂停并发送消息提示
 		mp.set_property_bool('pause', true)
 		--解除快捷键绑定和osd消息,被多处调用
 		local function remove()
@@ -142,22 +141,22 @@ local function openMenu()
 			remove()
 		end
 		mp.observe_property('pause', 'bool', handle_pause)
-		-- 注册快捷键关闭消息
+
+		-- 注册快捷键
+		-- 快捷键1: 关闭消息
 		mp.add_forced_key_binding(o.key_close, "temp_key_to_close", function()
 			remove()
 			mp.set_property_bool('pause', false)
 		end)
-		-- 注册复制缺失信息的快捷键
+		-- 快捷键2: 复制缺失信息
 		mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
 			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
 			mp.osd_message('已复制')
 		end)
-		-- 如果提供了fontInAss日志路径, 则多注册一个打开日志文件的快捷键
-		if o.miss_logs_path ~= '' then
-			mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
-				mp.commandv('script-binding', mp.get_script_name() .. '/openLog')
-			end)
-		end
+		-- 快捷键3: 打开日志面板
+		mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
+			mp.commandv('script-binding', mp.get_script_name() .. '/openLog')
+		end)
 
 		-- 先清空再刷新osd, 防止连续加载字幕导致重叠
 		osd:remove()
@@ -190,23 +189,23 @@ local function warn(miss)
 	if uosc_version then
 		for _, font in ipairs(zt) do
 			table.insert(items, {
-				title = font, 
+				title = font,
 				value = font,
-				bold = true, 
+				bold = true,
 			})
 		end
 		for _, font in ipairs(zx) do
 			table.insert(items, {
-				title = font, 
+				title = font,
 				value = font,
 				hint = '缺少字形',
-				bold = true, 
+				bold = true,
 				muted = true,
 			})
 		end
 
 		table.insert(items, {
-			title = '🔍 缺失日志',
+			title = '🔍 打开日志面板',
 			align = 'center',
 		})
 	else
@@ -229,9 +228,9 @@ local function warn(miss)
 		--头部的样式对后面的所有文本都生效, 除非被后面的样式覆盖
 		local head = '{\\b1\\bord1.2\\blur1.5\\3c&000000&}'
 		local tail = '{\\fs20\\bord1\\c&HEEEEEE&\\i1}*  '
-		
+
 		tail = tail..string.format(
-			'按 %s 关闭, 按 %s 复制, 按 %s 打开日志', 
+			'按 %s 忽略并继续, 按 %s 复制, 按 %s 访问日志面板',
 			o.key_close, o.key_copy, o.key_logs
 		)
 
@@ -251,7 +250,7 @@ local function post(path, retry_count)
 	local max_retries = 2
 
 	local file_check = io.open(path, "rb")
-    if not file_check then
+	if not file_check then
 		mp.msg.error('文件不存在: ' .. path)
 		return
 	end
@@ -264,93 +263,95 @@ local function post(path, retry_count)
 		end
 	end
 
-    -- 使用 mp.command_native_async 发送异步请求
-    mp.command_native_async({
-        name = "subprocess",
-        args = {
-            "curl", "-s", "-i",
-            "-X", "POST",
-            o.server .. suffix,
-            "--data-binary", "@" .. path,
-            "--insecure",
-            "--connect-timeout", "5",
-            "--max-time", "30",
-        },
-        playback_only = false,
-        capture_stdout = true,
-        capture_stderr = true,
-    }, function(success, result, error)
-        -- 异步回调函数
+	-- 使用 mp.command_native_async 发送异步请求
+	mp.command_native_async({
+		name = "subprocess",
+		args = {
+			"curl", "-s", "-i",
+			"-X", "POST",
+			o.server .. suffix,
+			"--data-binary", "@" .. path,
+			"--insecure",
+			"--connect-timeout", "5",
+			"--max-time", "30",
+			"-H", "X-Clear-Fonts: 0",		-- 清除内嵌字体
+			"-H", "X-Renamed-Restore: 1",	-- 恢复重命名的字体
+			"-H", "X-Fonts-Check: 0",		-- 严格模式, 缺失字体便不处理
+			},
+		playback_only = false,
+		capture_stdout = true,
+		capture_stderr = true,
+	}, function(success, result, error)
+		-- 异步回调函数
 		if not success then
 			mp.msg.error('请求失败: ' .. (error or '未知错误'))
 			mp.osd_message('❎ 请求失败', 3)
-            return
-        end
-		
-        -- 判断是否需要重试
-        local retryable_errors = {
-            [6] = true, [7] = true, [28] = true, 
-            [52] = true, [56] = true,
-        }
-        
-        if result.status ~= 0 and retryable_errors[result.status] and retry_count < max_retries then
-            mp.msg.warn(string.format('请求失败 (curl:%d)，%d秒后重试...', 
-                result.status, retry_count + 1))
-            mp.add_timeout(retry_count + 1, function()
-                post(path, retry_count + 1)
-            end)
-            return
-        end
-        
-        -- 处理结果
-        if result.status == 0 then
-            local http_status = result.stdout:match("HTTP/%d%.%d (%d+)")
-            local code = result.stdout:match("x%-code: ([^\r\n]*)")
+			return
+		end
+
+		-- 判断是否需要重试
+		local retryable_errors = {
+			[6] = true, [7] = true, [28] = true,
+			[52] = true, [56] = true,
+		}
+
+		if result.status ~= 0 and retryable_errors[result.status] and retry_count < max_retries then
+			mp.msg.warn(string.format('请求失败 (curl:%d)，%d秒后重试...',
+				result.status, retry_count + 1))
+			mp.add_timeout(retry_count + 1, function()
+				post(path, retry_count + 1)
+			end)
+			return
+		end
+
+		-- 处理结果
+		if result.status == 0 then
+			local http_status = result.stdout:match("HTTP/%d%.%d (%d+)")
+			local code = result.stdout:match("x%-code: ([^\r\n]*)")
 			local message = decode(result.stdout:match("x%-message: ([^\r\n]*)"))
-            
-            local function switchSubtitle()
-                local subtitle = result.stdout:match("%[Script Info%].*")
-                
-                if not subtitle then
-                    mp.msg.error('响应中没有找到字幕内容')
-                    return false
-                end
-                
-                local backup = path .. '.backup'
-                local success, err = os.rename(path, backup)
-                if not success then
-                    mp.msg.error('备份失败: ' .. (err or '未知错误'))
-                    return false
-                end
-                
-                local out_file, err = io.open(path, "w")
-                if not out_file then
-                    mp.msg.error('写入失败: ' .. (err or '未知错误'))
-                    os.rename(backup, path)
-                    return false
-                end
-                out_file:write(subtitle)
-                out_file:close()
-                
-                reloaded = true
-                mp.commandv("sub-reload")
-                table.insert(subsets, path)
-                return true
-            end
-            
-            if http_status == '405' then
-                mp.msg.error('API不支持此方法: ' .. o.server .. suffix)
-            elseif http_status == '500' then
-                mp.msg.error('服务器内部错误')
-            elseif http_status == '502' or http_status == '503' or http_status == '504' then
-                if retry_count < max_retries then
-                    mp.msg.warn('服务器暂时不可用，准备重试...')
-                    mp.add_timeout(retry_count + 1, function()
-                        post(path, retry_count + 1)
-                    end)
-                    return
-                end
-                mp.msg.error('服务器不可用 (HTTP ' .. http_status .. ')')
+
+			local function switchSubtitle()
+				local subtitle = result.stdout:match("%[Script Info%].*")
+
+				if not subtitle then
+					mp.msg.error('响应中没有找到字幕内容')
+					return false
+				end
+
+				local backup = path .. '.backup'
+				local success, err = os.rename(path, backup)
+				if not success then
+					mp.msg.error('备份失败: ' .. (err or '未知错误'))
+					return false
+				end
+
+				local out_file, err = io.open(path, "w")
+				if not out_file then
+					mp.msg.error('写入失败: ' .. (err or '未知错误'))
+					os.rename(backup, path)
+					return false
+				end
+				out_file:write(subtitle)
+				out_file:close()
+
+				reloaded = true
+				mp.commandv("sub-reload")
+				return true
+			end
+
+			if http_status == '405' then
+				mp.msg.error('API不支持此方法: ' .. o.server .. suffix)
+			elseif http_status == '500' then
+				mp.msg.error('服务器内部错误')
+			elseif http_status == '502' or http_status == '503' or http_status == '504' then
+				if retry_count < max_retries then
+					mp.msg.warn('服务器暂时不可用，准备重试...')
+					mp.add_timeout(retry_count + 1, function()
+						post(path, retry_count + 1)
+					end)
+					return
+				end
+				mp.msg.error('服务器不可用 (HTTP ' .. http_status .. ')')
 			elseif http_status == '200' then
 				if code == '200' then
 					if switchSubtitle() then
@@ -378,25 +379,28 @@ local function post(path, retry_count)
 						mp.msg.warn(utils.format_json(message))
 					end
 				end
-            else
-                mp.msg.warn('未知状态: HTTP ' .. (http_status or '?'))
-            end
-        else
-            local errors = {
-                [6] = '无法解析主机名',
-                [7] = '无法连接到服务器',
-                [28] = '连接超时',
-                [35] = 'SSL错误',
-                [52] = '服务器无响应',
-            }
-            local err_desc = errors[result.status] or ('curl错误: ' .. result.status)
-            mp.msg.error('请求失败: ' .. err_desc)
-            mp.osd_message('请求失败: ' .. err_desc, 5)
-            if result.status == 6 or result.status == 7 then
-                mp.msg.error('  API: ' .. o.server .. suffix)
-            end
-        end
-    end)
+			else
+				mp.msg.warn('未知状态: HTTP ' .. (http_status or '?'))
+			end
+		else
+			local errors = {
+				[6] = '无法解析主机名',
+				[7] = '无法连接到服务器',
+				[28] = '连接超时',
+				[35] = 'SSL错误',
+				[52] = '服务器无响应',
+			}
+			local err_desc = errors[result.status] or ('curl错误: ' .. result.status)
+			mp.msg.error('请求失败: ' .. err_desc)
+			mp.osd_message('请求失败: ' .. err_desc, 5)
+			if result.status == 6 or result.status == 7 then
+				mp.msg.error('  API: ' .. o.server .. suffix)
+			end
+		end
+	end)
+
+	-- 不管处理成功与否, 都不重复处理同一个字幕, 防止在连续加载字幕时重复请求
+	table.insert(subsets, path)
 end
 
 
@@ -416,16 +420,18 @@ local function on_sub_changed(_, sub)
 		post(external_filename)
 	else
 		-- 已经处理过一些字幕, 检查当前字幕是不是处理过的
-		local found = false	
+		local found = false
 		for _, item in ipairs(subsets) do
 			if item == external_filename then
-				-- 已经子集化了, 忽略
 				found = true;
 				break
 			end
 		end
 
-		if not found then
+		if found then	-- 处理过
+			reloaded = true
+			mp.commandv("sub-reload")
+		else			--没处理过
 			post(external_filename)
 		end
 	end
