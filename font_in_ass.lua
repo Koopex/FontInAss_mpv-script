@@ -55,13 +55,13 @@ local platform = mp.get_property_native('platform')
 require 'mp.options'.read_options(o, mp.get_script_name())
 
 local API
-local selected_server = 0		--当前使用的服务器
-local servers = {}				--可以配置多个服务地址
-local items, message = {}, ''	--再次打开缺失信息菜单时使用
-local miss = '' 				--供复制到剪切板使用
-local subsets = {}				--记录处理过的字幕, 防止重复处理
-local uosc_version = nil		--检测uosc
-local reloaded = false			--抵消切换子集化字幕触发的监测
+local selected_server = 0		-- 当前使用的服务器
+local servers = {}				-- 可以配置多个服务地址
+local items, osd_msg = {}, ''	-- 再次打开缺失信息菜单时使用
+local miss = '' 				-- 供复制到剪切板使用
+local subsets = {}				-- 记录处理过的字幕, 防止重复处理
+local uosc_version = nil		-- 检测uosc
+local reloaded = false			-- 抵消切换子集化字幕触发的监测
 
 
 local function switchServer()
@@ -108,7 +108,6 @@ end
 
 local function decode(data)
 	if not data then return nil end
-	-- 用来解码 x-message
 	local base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	data = string.gsub(data, "[^%a%d%+%/=]", "")
 	local padding = string.sub(data, -2)
@@ -137,49 +136,49 @@ local function decode(data)
 			end
 		end
 	end
-
 	return utils.parse_json(result)
 end
 
 
 local function openMenu(first)
-	-- 没处理过字幕
 	if not next(subsets) then mp.osd_message('还没处理过本地字幕', 3) return end
-	-- 没有缺失信息
-	if not next(items) and message == '' then
+	if not next(items) and osd_msg == '' then
 		if not first then mp.osd_message('当前字幕没有缺失的字体或字形', 3) end
 		return
 	end
 
-	--不仅是第一次加载字幕, 通过快捷键也能调用
 	if uosc_version and not o.always_osd then
-		-- 打开uosc菜单
-		-- 如果已经打开就关闭
+		-- uosc 菜单通知
+		local menu_props = utils.format_json({
+			type = 'font-loss',
+			title = '字体子集化警告',
+			items = items,
+			callback = {mp.get_script_name(), 'menu_event'},
+			footnote = '点击字体可复制；右侧字符为缺失的字形',
+		})
+
 		if mp.get_property_osd('user-data/uosc/menu/type', 'null') == 'font-loss' then
-			mp.commandv('script-message-to', 'uosc', 'close-menu', 'font-loss')
+			if not first then
+				mp.commandv('script-message-to', 'uosc', 'close-menu', 'font-loss')
+			else
+				mp.commandv('script-message-to', 'uosc', 'update-menu', menu_props)
+			end
 		else
-			mp.set_property('pause', 'yes')
-			local menu_props = utils.format_json({
-				type = 'font-loss',
-				title = '字体缺失',
-				items = items,
-				callback = {mp.get_script_name(), 'menu_event'},
-				footnote = '点击字体复制',
-			})
 			mp.commandv('script-message-to', 'uosc', 'open-menu', menu_props)
+			mp.set_property('pause', 'yes')
 		end
 	else
-		-- 根据 warn() 生成的文本发送消息
+		-- osd 通知
 		mp.set_property_bool('pause', true)
-		--解除快捷键绑定和osd消息,被多处调用
-		local function remove()
+
+		local function remove()					-- 解除快捷键绑定和osd消息,被多处调用
 			mp.remove_key_binding("temp_key_to_open_log")
 			mp.remove_key_binding("temp_key_to_close")
 			mp.remove_key_binding("temp_key_to_copy")
 			osd:remove()
 		end
-		-- 处理暂停/继续事件, 其实不止设定的快捷键可以关闭消息, 其他方式暂停/继续也可以
-		local function handle_pause(_, pause)
+
+		local function handle_pause(_, pause)	-- 处理暂停/继续事件
 			if pause then return end
 			mp.unobserve_property(handle_pause)
 			remove()
@@ -187,24 +186,24 @@ local function openMenu(first)
 		mp.observe_property('pause', 'bool', handle_pause)
 
 		-- 注册快捷键
-		-- 快捷键1: 关闭消息
 		mp.add_forced_key_binding(o.key_close, "temp_key_to_close", function()
+			-- 快捷键1: 关闭消息
 			remove()
 			mp.set_property_bool('pause', false)
 		end)
-		-- 快捷键2: 复制缺失信息
 		mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
+			-- 快捷键2: 复制缺失信息
 			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
 			mp.osd_message('已复制')
 		end)
-		-- 快捷键3: 打开日志面板
 		mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
+			-- 快捷键3: 打开日志面板
 			mp.commandv('script-binding', mp.get_script_name() .. '/openLog')
 		end)
 
 		-- 先清空再刷新osd, 防止连续加载字幕导致重叠
 		osd:remove()
-		osd.data = message
+		osd.data = osd_msg
 		osd:update()
 	end
 end
@@ -218,34 +217,44 @@ local function warn(miss)
 		if string.find(prefix, "字体") or string.find(prefix, "font") then
 			table.insert(zt, line:match("%[([^%]]+)%]"))
 		elseif string.find(prefix, "字形") then
-			table.insert(zx, line:match("%[.-%]")..'：'..line:match("%((.-)%)"))
+			zx[line:match("%[([^%]]+)%]")] = line:match("%]%((.-)%)")
 		elseif string.find(prefix, "glyphs") then
-			table.insert(zx, line:match("%[.*"))
+			zx[line:match("%[([^%]]+)%]")] = line:match("%]: (.+)$")
 		end
 	end
 
 	-- 输出到控制台
-	for _, font in ipairs(zt) do
-		mp.msg.error('字体缺失：'..font)
+	if next(zt) then
+		local console_message = '字体缺失：'
+		for _, font in ipairs(zt) do
+			console_message = console_message .. '\n •【' .. font .. '】'
+		end
+		mp.msg.error(console_message)
 	end
-	for _, font in ipairs(zx) do
-		mp.msg.warn('缺少字形：'..font)
+	if next(zx) then
+		local console_message = '缺少字形：'
+		for font, glyphs in pairs(zx) do
+			console_message = console_message .. '\n •【' .. font .. '】: ' .. glyphs
+		end
+		mp.msg.warn(console_message)
 	end
 
-	-- uosc 通知
 	if uosc_version and not o.always_osd then
+	-- uosc 通知
 		for _, font in ipairs(zt) do
 			table.insert(items, {
 				title = font,
+				hint = '字体缺失',
 				value = font,
 				bold = true,
 			})
 		end
-		for _, font in ipairs(zx) do
+		for font, glyphs in pairs(zx) do
 			table.insert(items, {
 				title = font,
-				value = font,
-				hint = '缺少字形',
+				-- hint = glyphs,
+				hint = '缺少字形：'..glyphs,
+				value = string.format('【%s】: %s', font, glyphs),
 				bold = true,
 				muted = true,
 			})
@@ -257,22 +266,24 @@ local function warn(miss)
 		})
 	else
 	-- osd 通知	
-		-- 提前构建好osd消息, 后面可能会被快捷键调用, 不必反复构建
+		if next(zt) or next(zx) then
+			osd_msg = osd_msg .. '\\N\\N\\N'
+		end
 		if next(zt) then
-			message = message .. '\\N\\N\\N{\\fs32\\c&H6B6BFF&}⚠️ 字体缺失\\N'
-			for _, s in ipairs(zt) do
-				message = message .. '{\\fs26\\c&HFFFFFF&}• ' .. s .. '\\N'
+			osd_msg = osd_msg .. '{\\fs32\\c&H6B6BFF&}⚠️ 字体缺失{\\fs26\\c&HFFFFFF&}'
+			for _, font in ipairs(zt) do
+				osd_msg = osd_msg .. '\\N\\h\\h\\h•\\h\\h' .. font
 			end
-			message = message .. '\\N'
+			osd_msg = osd_msg .. '\\N\\N'
 		end
 		if next(zx) then
-			message = message .. '{\\fs30\\c&H3DD9FF&}📝 缺少字形\\N'
-			for _, s in ipairs(zx) do
-				message = message .. '{\\fs26\\c&HFFFFFF&}• ' .. s .. '\\N'
+			osd_msg = osd_msg .. '{\\fs30\\c&H3DD9FF&}📝 缺少字形{\\fs26\\c&HFFFFFF&}'
+			for font, glyphs in pairs(zx) do
+				osd_msg = string.format('%s\\N\\h\\h\\h•【%s】：%s', osd_msg, font, glyphs)
 			end
-			message = message .. '\\N'
+			osd_msg = osd_msg .. '\\N\\N'
 		end
-		--头部的样式对后面的所有文本都生效, 除非被后面的样式覆盖
+
 		local head = '{\\b1\\bord1.2\\blur1.5\\3c&000000&}'
 		local tail = '{\\fs20\\bord1\\c&HEEEEEE&\\i1}*  '
 
@@ -283,7 +294,7 @@ local function warn(miss)
 			o.key_close, o.key_copy, o.key_logs
 		)
 
-		message = head..message..tail
+		osd_msg = head..osd_msg..tail
 	end
 
 	-- 安静模式 或 (仅字体缺失时通知, 且没有字体缺失) 不通知
@@ -317,8 +328,8 @@ local function post(path, retry_count)
 			"--insecure",
 			"--connect-timeout", "5",
 			"--max-time", "30",
-			"-H", "X-Clear-Fonts: 0",			-- 清除内嵌字体
-			"-H", "X-Fonts-Check: 0",			-- 严格模式, 缺失字体便不处理
+			"-H", "X-Clear-Fonts: 0",	-- 清除内嵌字体
+			"-H", "X-Fonts-Check: 0",	-- 严格模式, 缺失字体便不处理
 			},
 		playback_only = false,
 		capture_stdout = true,
@@ -361,7 +372,7 @@ local function post(path, retry_count)
 
 			-- 处理不同的 HTTP 状态码
 			local should_switch = false
-			
+
 			if http_status == '200' then
 				-- HTTP 200 是成功的，根据 X-Code 判断具体结果
 				if code == '200' then
@@ -412,7 +423,7 @@ local function post(path, retry_count)
 				mp.msg.error('无法解析服务器响应 (' .. API .. ')')
 				should_switch = true
 			end
-			
+
 			-- 处理服务器切换
 			if should_switch then
 				if switchServer() then
@@ -437,7 +448,7 @@ local function post(path, retry_count)
 			}
 			local err_desc = errors[result.status] or ('curl错误: ' .. result.status)
 			mp.msg.error('请求失败 (' .. API .. '): ' .. err_desc)
-			
+
 			-- 尝试切换到下一个服务器
 			if switchServer() then
 				mp.msg.info('切换到备用服务器: ' .. API)
@@ -462,8 +473,8 @@ local function on_sub_changed(_, sub)
 	-- 抵消加载子集化字幕的触发
 	if reloaded then reloaded = false return end
 
-	-- 更换字幕,清空旧字幕的缺失信息
-	items, message, miss = {}, '', ''
+	-- 更换字幕,清空旧字幕的警告信息
+	items, osd_msg, miss = {}, '', ''
 
 	if not sub or not sub.external or sub.codec ~= "ass" or sub["external-filename"]:match('^http') then return end
 
@@ -485,7 +496,7 @@ local function on_sub_changed(_, sub)
 		if found then	-- 处理过
 			reloaded = true
 			mp.commandv("sub-reload")
-		else			--没处理过
+		else			-- 没处理过
 			post(external_filename)
 		end
 	end
@@ -510,19 +521,18 @@ end
 
 
 local function menu_event(json)
-	--发送uosc菜单的响应
+	-- 发送uosc菜单的响应
 	local event = utils.parse_json(json)
 	if event.type == 'activate' then
-		--点击条目复制
-		if event.value then
+		
+		if event.value then -- 点击条目复制
 			mp.osd_message('已复制', 2)
 			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', event.value, '"'}))
-		else
-			--打开日志的按钮没设置value, 用来区分
+		else -- 打开日志的按钮没设置value
 			mp.commandv('script-binding', mp.get_script_name() .. '/openLog')
 		end
 	elseif event.type == 'close' then
-		--关闭菜单自动继续
+		-- 关闭菜单自动继续
 		mp.set_property('pause', 'no')
 	end
 end
