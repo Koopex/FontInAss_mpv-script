@@ -57,8 +57,8 @@ require 'mp.options'.read_options(o, mp.get_script_name())
 local API
 local selected_server = 0		-- 当前使用的服务器
 local servers = {}				-- 可以配置多个服务地址
-local items, osd_msg = {}, ''	-- 再次打开缺失信息菜单时使用
-local miss = '' 				-- 供复制到剪切板使用
+local items, osd_msg = {}, ''	-- 再次查看警告信息使用
+local clipboard = '' 			-- 供复制到剪切板使用
 local subsets = {}				-- 记录处理过的字幕, 防止重复处理
 local uosc_version = nil		-- 检测uosc
 local reloaded = false			-- 抵消切换子集化字幕触发的监测
@@ -193,7 +193,7 @@ local function openMenu(first)
 		end)
 		mp.add_forced_key_binding(o.key_copy, "temp_key_to_copy", function()
 			-- 快捷键2: 复制缺失信息
-			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', miss, '"'}))
+			mp.set_property("clipboard/text", clipboard)
 			mp.osd_message('已复制')
 		end)
 		mp.add_forced_key_binding(o.key_logs, "temp_key_to_open_log", function()
@@ -209,10 +209,10 @@ local function openMenu(first)
 end
 
 
-local function warn(miss)
+local function warn(xmessage)
 	-- 分离字体和字形信息
 	local zt, zx = {}, {}
-	for _, line in ipairs(miss) do
+	for _, line in ipairs(xmessage) do
 		local prefix = line:match("^(.-)%s*%[")
 		if string.find(prefix, "字体") or string.find(prefix, "font") then
 			table.insert(zt, line:match("%[([^%]]+)%]"))
@@ -267,18 +267,22 @@ local function warn(miss)
 	else
 	-- osd 通知	
 		if next(zt) or next(zx) then
-			osd_msg = osd_msg .. '\\N\\N\\N'
+			osd_msg = '\\N\\N\\N'
 		end
 		if next(zt) then
+			clipboard = '字体缺失:'
 			osd_msg = osd_msg .. '{\\fs32\\c&H6B6BFF&}⚠️ 字体缺失{\\fs26\\c&HFFFFFF&}'
 			for _, font in ipairs(zt) do
+				clipboard = clipboard .. string.format('\n【%s】', font)
 				osd_msg = osd_msg .. '\\N\\h\\h\\h•\\h\\h' .. font
 			end
 			osd_msg = osd_msg .. '\\N\\N'
 		end
 		if next(zx) then
+			clipboard = clipboard .. '\n\n缺少字形:'
 			osd_msg = osd_msg .. '{\\fs30\\c&H3DD9FF&}📝 缺少字形{\\fs26\\c&HFFFFFF&}'
 			for font, glyphs in pairs(zx) do
+				clipboard = clipboard .. string.format('\n【%s】：%s', font, glyphs)
 				osd_msg = string.format('%s\\N\\h\\h\\h•【%s】：%s', osd_msg, font, glyphs)
 			end
 			osd_msg = osd_msg .. '\\N\\N'
@@ -474,7 +478,7 @@ local function on_sub_changed(_, sub)
 	if reloaded then reloaded = false return end
 
 	-- 更换字幕,清空旧字幕的警告信息
-	items, osd_msg, miss = {}, '', ''
+	items, osd_msg, clipboard = {}, '', ''
 
 	if not sub or not sub.external or sub.codec ~= "ass" or sub["external-filename"]:match('^http') then return end
 
@@ -524,10 +528,10 @@ local function menu_event(json)
 	-- 发送uosc菜单的响应
 	local event = utils.parse_json(json)
 	if event.type == 'activate' then
-		
+
 		if event.value then -- 点击条目复制
 			mp.osd_message('已复制', 2)
-			mp.commandv("run", "powershell", "set-clipboard", table.concat({'"', event.value, '"'}))
+			mp.set_property("clipboard/text", event.value)
 		else -- 打开日志的按钮没设置value
 			mp.commandv('script-binding', mp.get_script_name() .. '/openLog')
 		end
